@@ -83,11 +83,22 @@
         async shareBoard() {
           const json = JSON.stringify(this.board);
           const compressed = await this.compressText(json);
-          if (compressed.length < 2000) {
+          // Increase threshold to 8000 characters for larger boards
+          if (compressed.length < 8000) {
             window.location.hash = compressed;
             alert('URL updated. You can copy and share this page URL.');
           } else {
-            alert('Board too large to encode in URL. Please download instead.');
+            // If still too large, attempt to copy the compressed string to clipboard
+            if (navigator.clipboard) {
+              try {
+                await navigator.clipboard.writeText(compressed);
+                alert('Board is large. Compressed data has been copied to clipboard. Share it and import on the other side.');
+              } catch (err) {
+                prompt('Board is large. Please copy the compressed data below:', compressed);
+              }
+            } else {
+              prompt('Board is large. Please copy the compressed data below:', compressed);
+            }
           }
         },
 
