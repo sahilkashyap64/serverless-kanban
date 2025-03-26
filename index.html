@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" x-data="kanbanApp()" x-init="loadBoard">
+<html lang="en" x-data="kanbanApp()" x-init="(async () => { await loadBoard(); })()">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,7 +10,7 @@
     body { font-family: sans-serif; padding: 20px; }
     .board { display: flex; gap: 16px; }
     .column { border: 1px solid #ccc; border-radius: 8px; padding: 10px; width: 200px; background: #f9f9f9; }
-    .card { background: white; border-radius: 6px; padding: 8px; margin-bottom: 8px; box-shadow: 1px 1px 4px rgba(0,0,0,0.1); }
+    .card { background: white; border-radius: 6px; padding: 8px; margin-bottom: 8px; box-shadow: 1px 1px 4px rgba(0,0,0,0.1); cursor: pointer; }
     .actions { margin-top: 20px; }
   </style>
 </head>
@@ -18,10 +18,14 @@
   <h1>🗂️ AlpineJS Trello Clone</h1>
   <div class="board">
     <template x-for="(column, colIndex) in board.columns" :key="colIndex">
-      <div class="column">
+      <div class="column" @dragover.prevent @drop="drop($event, colIndex)">
         <h3 x-text="column.name"></h3>
         <template x-for="(card, cardIndex) in column.cards" :key="cardIndex">
-          <div class="card" x-text="card"></div>
+          <div class="card" 
+               draggable="true" 
+               @dragstart="dragStart($event, colIndex, cardIndex)"
+               @dblclick="editCard(colIndex, cardIndex)"
+               x-text="card"></div>
         </template>
         <input type="text" placeholder="New card..." x-model="newCards[colIndex]">
         <button @click="addCard(colIndex)">Add</button>
@@ -46,19 +50,19 @@
           ]
         },
         newCards: ['', '', ''],
+        draggingCard: null,
 
-        loadBoard() {
+        async loadBoard() {
           const urlHash = window.location.hash.slice(1);
           if (urlHash) {
             try {
-              const decompressed = LZString.decompressFromEncodedURIComponent(urlHash);
+              const decompressed = await this.decompressText(urlHash);
               if (decompressed) {
                 this.board = JSON.parse(decompressed);
                 return;
               }
             } catch (e) { console.error('Error parsing from URL:', e); }
           }
-
           const saved = localStorage.getItem('kanban-board');
           if (saved) {
             this.board = JSON.parse(saved);
@@ -76,9 +80,9 @@
           this.saveBoard();
         },
 
-        shareBoard() {
+        async shareBoard() {
           const json = JSON.stringify(this.board);
-          const compressed = LZString.compressToEncodedURIComponent(json);
+          const compressed = await this.compressText(json);
           if (compressed.length < 2000) {
             window.location.hash = compressed;
             alert('URL updated. You can copy and share this page URL.');
@@ -110,6 +114,92 @@
             }
           };
           reader.readAsText(file);
+        },
+
+        dragStart(event, colIndex, cardIndex) {
+          this.draggingCard = { colIndex, cardIndex, card: this.board.columns[colIndex].cards[cardIndex] };
+        },
+
+        drop(event, targetColIndex) {
+          if (this.draggingCard) {
+            // Remove card from its original column
+            this.board.columns[this.draggingCard.colIndex].cards.splice(this.draggingCard.cardIndex, 1);
+            // Add card to the target column
+            this.board.columns[targetColIndex].cards.push(this.draggingCard.card);
+            this.saveBoard();
+            this.draggingCard = null;
+          }
+        },
+
+        editCard(colIndex, cardIndex) {
+          const currentText = this.board.columns[colIndex].cards[cardIndex];
+          const newText = prompt("Edit card text:", currentText);
+          if (newText !== null) {
+            this.board.columns[colIndex].cards[cardIndex] = newText;
+            this.saveBoard();
+          }
+        },
+
+        // Compress text using CompressionStream if available; fallback to LZString
+        async compressText(text) {
+          if (window.CompressionStream) {
+            try {
+              const cs = new CompressionStream("gzip");
+              const writer = cs.writable.getWriter();
+              writer.write(new TextEncoder().encode(text));
+              writer.close();
+              const compressedArrayBuffer = await new Response(cs.readable).arrayBuffer();
+              return "cs:" + this.arrayBufferToBase64(compressedArrayBuffer);
+            } catch (e) {
+              console.error("CompressionStream error:", e);
+              return LZString.compressToEncodedURIComponent(text);
+            }
+          } else {
+            return LZString.compressToEncodedURIComponent(text);
+          }
+        },
+
+        // Decompress text using DecompressionStream if available; fallback to LZString
+        async decompressText(text) {
+          if (text.startsWith("cs:")) {
+            text = text.substring(3);
+            if (window.DecompressionStream) {
+              try {
+                const compressedBuffer = this.base64ToArrayBuffer(text);
+                const ds = new DecompressionStream("gzip");
+                const decompressedStream = new Response(compressedBuffer).body.pipeThrough(ds);
+                return await new Response(decompressedStream).text();
+              } catch (e) {
+                console.error("DecompressionStream error:", e);
+                return null;
+              }
+            } else {
+              alert("Your browser doesn't support the DecompressionStream API.");
+              return null;
+            }
+          } else {
+            return LZString.decompressFromEncodedURIComponent(text);
+          }
+        },
+
+        arrayBufferToBase64(buffer) {
+          let binary = '';
+          const bytes = new Uint8Array(buffer);
+          const len = bytes.byteLength;
+          for (let i = 0; i < len; i++) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          return btoa(binary);
+        },
+
+        base64ToArrayBuffer(base64) {
+          const binary = atob(base64);
+          const len = binary.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          return bytes.buffer;
         }
       };
     }
