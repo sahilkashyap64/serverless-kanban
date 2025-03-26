@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en" x-data="kanbanApp()" x-init="loadBoard">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AlpineJS Kanban</title>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .board { display: flex; gap: 16px; }
+    .column { border: 1px solid #ccc; border-radius: 8px; padding: 10px; width: 200px; background: #f9f9f9; }
+    .card { background: white; border-radius: 6px; padding: 8px; margin-bottom: 8px; box-shadow: 1px 1px 4px rgba(0,0,0,0.1); }
+    .actions { margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <h1>🗂️ AlpineJS Trello Clone</h1>
+  <div class="board">
+    <template x-for="(column, colIndex) in board.columns" :key="colIndex">
+      <div class="column">
+        <h3 x-text="column.name"></h3>
+        <template x-for="(card, cardIndex) in column.cards" :key="cardIndex">
+          <div class="card" x-text="card"></div>
+        </template>
+        <input type="text" placeholder="New card..." x-model="newCards[colIndex]">
+        <button @click="addCard(colIndex)">Add</button>
+      </div>
+    </template>
+  </div>
+
+  <div class="actions">
+    <button @click="shareBoard">🔗 Share Board</button>
+    <button @click="downloadBoard">💾 Download Board</button>
+    <input type="file" @change="importBoard($event)">
+  </div>
+
+  <script>
+    function kanbanApp() {
+      return {
+        board: {
+          columns: [
+            { name: 'To Do', cards: [] },
+            { name: 'In Progress', cards: [] },
+            { name: 'Done', cards: [] },
+          ]
+        },
+        newCards: ['', '', ''],
+
+        loadBoard() {
+          const urlHash = window.location.hash.slice(1);
+          if (urlHash) {
+            try {
+              const decompressed = LZString.decompressFromEncodedURIComponent(urlHash);
+              if (decompressed) {
+                this.board = JSON.parse(decompressed);
+                return;
+              }
+            } catch (e) { console.error('Error parsing from URL:', e); }
+          }
+
+          const saved = localStorage.getItem('kanban-board');
+          if (saved) {
+            this.board = JSON.parse(saved);
+          }
+        },
+
+        saveBoard() {
+          localStorage.setItem('kanban-board', JSON.stringify(this.board));
+        },
+
+        addCard(colIndex) {
+          if (this.newCards[colIndex].trim() === '') return;
+          this.board.columns[colIndex].cards.push(this.newCards[colIndex]);
+          this.newCards[colIndex] = '';
+          this.saveBoard();
+        },
+
+        shareBoard() {
+          const json = JSON.stringify(this.board);
+          const compressed = LZString.compressToEncodedURIComponent(json);
+          if (compressed.length < 2000) {
+            window.location.hash = compressed;
+            alert('URL updated. You can copy and share this page URL.');
+          } else {
+            alert('Board too large to encode in URL. Please download instead.');
+          }
+        },
+
+        downloadBoard() {
+          const blob = new Blob([JSON.stringify(this.board, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'kanban-board.json';
+          a.click();
+          URL.revokeObjectURL(url);
+        },
+
+        importBoard(event) {
+          const file = event.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            try {
+              this.board = JSON.parse(e.target.result);
+              this.saveBoard();
+            } catch (e) {
+              alert('Invalid JSON');
+            }
+          };
+          reader.readAsText(file);
+        }
+      };
+    }
+  </script>
+</body>
+</html>
