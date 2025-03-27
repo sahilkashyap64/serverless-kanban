@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AlpineJS Trello Clone with Progressive Compression</title>
+  <title>AlpineJS Trello Clone with Adaptive Progressive Compression</title>
   <!-- AlpineJS -->
   <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
   <!-- Fallback compression library -->
@@ -62,6 +62,10 @@
         // WASM Zstandard state
         zstdInitialized: false,
         zstd: null,
+        // Target maximum length for the encoded string (e.g. URL size limit)
+        targetLength: 2000,
+        // Maximum number of iterations to avoid infinite loops
+        maxIterations: 10,
 
         async loadBoard() {
           const urlHash = window.location.hash.slice(1);
@@ -156,11 +160,17 @@
         },
 
         // Progressive encoding using pako and js-base64 (JavaScript version)
-        async progressiveEncodeJS(text, iterations = 3) {
+        async progressiveEncodeJS(text) {
           let compressed = text;
-          for (let i = 0; i < iterations; i++) {
+          let iterations = 0;
+          // Continue iterating until the compressed string is below targetLength or max iterations reached
+          while (compressed.length > this.targetLength && iterations < this.maxIterations) {
+            iterations++;
             const compressedData = pako.gzip(compressed);
-            compressed = Base64.fromUint8Array(compressedData, true);
+            const newCompressed = Base64.fromUint8Array(compressedData, true);
+            // If further compression doesn't reduce size, break
+            if (newCompressed.length >= compressed.length) break;
+            compressed = newCompressed;
           }
           return `ENCv1|${iterations}|${compressed}`;
         },
@@ -187,13 +197,17 @@
           }
         },
 
-        async progressiveEncodeWASM(text, iterations = 3) {
+        async progressiveEncodeWASM(text) {
           await this.initZstd();
           let compressed = text;
-          for (let i = 0; i < iterations; i++) {
+          let iterations = 0;
+          while (compressed.length > this.targetLength && iterations < this.maxIterations) {
+            iterations++;
             const cctx = new this.zstd.SimpleCompressionContext();
             const compressedData = cctx.compress(new TextEncoder().encode(compressed));
-            compressed = Base64.fromUint8Array(compressedData, true);
+            const newCompressed = Base64.fromUint8Array(compressedData, true);
+            if (newCompressed.length >= compressed.length) break;
+            compressed = newCompressed;
           }
           return `ENCv2|${iterations}|${compressed}`;
         },
@@ -216,8 +230,7 @@
         // Share Board using Progressive JS method
         async shareBoardJS() {
           const json = JSON.stringify(this.board);
-          const encoded = await this.progressiveEncodeJS(json, 3);
-          // Increase threshold to 8000 characters
+          const encoded = await this.progressiveEncodeJS(json);
           if (encoded.length < 8000) {
             window.location.hash = encoded;
             alert('URL updated using Progressive JS. Share this URL.');
@@ -238,7 +251,7 @@
         // Share Board using Progressive WASM method
         async shareBoardWASM() {
           const json = JSON.stringify(this.board);
-          const encoded = await this.progressiveEncodeWASM(json, 3);
+          const encoded = await this.progressiveEncodeWASM(json);
           if (encoded.length < 8000) {
             window.location.hash = encoded;
             alert('URL updated using Progressive WASM. Share this URL.');
