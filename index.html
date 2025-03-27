@@ -3,9 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AlpineJS Kanban</title>
+  <title>AlpineJS Trello Clone with Progressive Compression</title>
+  <!-- AlpineJS -->
   <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <!-- Fallback compression library -->
   <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js"></script>
+  <!-- Progressive JS compression libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-base64@3.7.2/base64.min.js"></script>
+  <!-- WASM Zstandard compression -->
+  <script src="https://cdn.jsdelivr.net/npm/zstd-codec@1.4.0/dist/zstd-codec.min.js"></script>
   <style>
     body { font-family: sans-serif; padding: 20px; }
     .board { display: flex; gap: 16px; }
@@ -34,7 +41,8 @@
   </div>
 
   <div class="actions">
-    <button @click="shareBoard">🔗 Share Board</button>
+    <button @click="shareBoardJS">🔗 Share Board (Progressive JS)</button>
+    <button @click="shareBoardWASM">🔗 Share Board (Progressive WASM)</button>
     <button @click="downloadBoard">💾 Download Board</button>
     <input type="file" @change="importBoard($event)">
   </div>
@@ -51,17 +59,37 @@
         },
         newCards: ['', '', ''],
         draggingCard: null,
+        // WASM Zstandard state
+        zstdInitialized: false,
+        zstd: null,
 
         async loadBoard() {
           const urlHash = window.location.hash.slice(1);
           if (urlHash) {
             try {
-              const decompressed = await this.decompressText(urlHash);
-              if (decompressed) {
-                this.board = JSON.parse(decompressed);
-                return;
+              if (urlHash.startsWith("ENCv1|")) {
+                const decompressed = await this.progressiveDecodeJS(urlHash);
+                if (decompressed) {
+                  this.board = JSON.parse(decompressed);
+                  return;
+                }
+              } else if (urlHash.startsWith("ENCv2|")) {
+                const decompressed = await this.progressiveDecodeWASM(urlHash);
+                if (decompressed) {
+                  this.board = JSON.parse(decompressed);
+                  return;
+                }
+              } else {
+                // Fallback to LZString compression
+                const decompressed = LZString.decompressFromEncodedURIComponent(urlHash);
+                if (decompressed) {
+                  this.board = JSON.parse(decompressed);
+                  return;
+                }
               }
-            } catch (e) { console.error('Error parsing from URL:', e); }
+            } catch (e) {
+              console.error('Error parsing from URL:', e);
+            }
           }
           const saved = localStorage.getItem('kanban-board');
           if (saved) {
@@ -78,28 +106,6 @@
           this.board.columns[colIndex].cards.push(this.newCards[colIndex]);
           this.newCards[colIndex] = '';
           this.saveBoard();
-        },
-
-        async shareBoard() {
-          const json = JSON.stringify(this.board);
-          const compressed = await this.compressText(json);
-          // Increase threshold to 8000 characters for larger boards
-          if (compressed.length < 8000) {
-            window.location.hash = compressed;
-            alert('URL updated. You can copy and share this page URL.');
-          } else {
-            // If still too large, attempt to copy the compressed string to clipboard
-            if (navigator.clipboard) {
-              try {
-                await navigator.clipboard.writeText(compressed);
-                alert('Board is large. Compressed data has been copied to clipboard. Share it and import on the other side.');
-              } catch (err) {
-                prompt('Board is large. Please copy the compressed data below:', compressed);
-              }
-            } else {
-              prompt('Board is large. Please copy the compressed data below:', compressed);
-            }
-          }
         },
 
         downloadBoard() {
@@ -133,9 +139,7 @@
 
         drop(event, targetColIndex) {
           if (this.draggingCard) {
-            // Remove card from its original column
             this.board.columns[this.draggingCard.colIndex].cards.splice(this.draggingCard.cardIndex, 1);
-            // Add card to the target column
             this.board.columns[targetColIndex].cards.push(this.draggingCard.card);
             this.saveBoard();
             this.draggingCard = null;
@@ -151,67 +155,106 @@
           }
         },
 
-        // Compress text using CompressionStream if available; fallback to LZString
-        async compressText(text) {
-          if (window.CompressionStream) {
-            try {
-              const cs = new CompressionStream("gzip");
-              const writer = cs.writable.getWriter();
-              writer.write(new TextEncoder().encode(text));
-              writer.close();
-              const compressedArrayBuffer = await new Response(cs.readable).arrayBuffer();
-              return "cs:" + this.arrayBufferToBase64(compressedArrayBuffer);
-            } catch (e) {
-              console.error("CompressionStream error:", e);
-              return LZString.compressToEncodedURIComponent(text);
-            }
-          } else {
-            return LZString.compressToEncodedURIComponent(text);
+        // Progressive encoding using pako and js-base64 (JavaScript version)
+        async progressiveEncodeJS(text, iterations = 3) {
+          let compressed = text;
+          for (let i = 0; i < iterations; i++) {
+            const compressedData = pako.gzip(compressed);
+            compressed = Base64.fromUint8Array(compressedData, true);
+          }
+          return `ENCv1|${iterations}|${compressed}`;
+        },
+
+        async progressiveDecodeJS(encoded) {
+          const parts = encoded.split('|');
+          if (parts.length < 3) throw new Error('Invalid format for progressive JS encoding');
+          const iterations = parseInt(parts[1], 10);
+          let compressed = parts.slice(2).join('|');
+          for (let i = 0; i < iterations; i++) {
+            const compressedData = Base64.toUint8Array(compressed);
+            compressed = pako.ungzip(compressedData, { to: 'string' });
+          }
+          return compressed;
+        },
+
+        // Progressive encoding using WASM (Zstandard via zstd-codec)
+        async initZstd() {
+          if (!this.zstdInitialized) {
+            this.zstd = await new Promise(resolve => {
+              ZstdCodec.run(zstd => resolve(zstd));
+            });
+            this.zstdInitialized = true;
           }
         },
 
-        // Decompress text using DecompressionStream if available; fallback to LZString
-        async decompressText(text) {
-          if (text.startsWith("cs:")) {
-            text = text.substring(3);
-            if (window.DecompressionStream) {
+        async progressiveEncodeWASM(text, iterations = 3) {
+          await this.initZstd();
+          let compressed = text;
+          for (let i = 0; i < iterations; i++) {
+            const cctx = new this.zstd.SimpleCompressionContext();
+            const compressedData = cctx.compress(new TextEncoder().encode(compressed));
+            compressed = Base64.fromUint8Array(compressedData, true);
+          }
+          return `ENCv2|${iterations}|${compressed}`;
+        },
+
+        async progressiveDecodeWASM(encoded) {
+          await this.initZstd();
+          const parts = encoded.split('|');
+          if (parts.length < 3) throw new Error('Invalid format for progressive WASM encoding');
+          const iterations = parseInt(parts[1], 10);
+          let compressed = parts.slice(2).join('|');
+          for (let i = 0; i < iterations; i++) {
+            const compressedData = Base64.toUint8Array(compressed);
+            const dctx = new this.zstd.SimpleDecompressionContext();
+            const decompressed = dctx.decompress(compressedData);
+            compressed = new TextDecoder().decode(decompressed);
+          }
+          return compressed;
+        },
+
+        // Share Board using Progressive JS method
+        async shareBoardJS() {
+          const json = JSON.stringify(this.board);
+          const encoded = await this.progressiveEncodeJS(json, 3);
+          // Increase threshold to 8000 characters
+          if (encoded.length < 8000) {
+            window.location.hash = encoded;
+            alert('URL updated using Progressive JS. Share this URL.');
+          } else {
+            if (navigator.clipboard) {
               try {
-                const compressedBuffer = this.base64ToArrayBuffer(text);
-                const ds = new DecompressionStream("gzip");
-                const decompressedStream = new Response(compressedBuffer).body.pipeThrough(ds);
-                return await new Response(decompressedStream).text();
-              } catch (e) {
-                console.error("DecompressionStream error:", e);
-                return null;
+                await navigator.clipboard.writeText(encoded);
+                alert('Board is large. Encoded data copied to clipboard (Progressive JS).');
+              } catch (err) {
+                prompt('Board is large. Please copy the encoded data (Progressive JS) below:', encoded);
               }
             } else {
-              alert("Your browser doesn't support the DecompressionStream API.");
-              return null;
+              prompt('Board is large. Please copy the encoded data (Progressive JS) below:', encoded);
             }
+          }
+        },
+
+        // Share Board using Progressive WASM method
+        async shareBoardWASM() {
+          const json = JSON.stringify(this.board);
+          const encoded = await this.progressiveEncodeWASM(json, 3);
+          if (encoded.length < 8000) {
+            window.location.hash = encoded;
+            alert('URL updated using Progressive WASM. Share this URL.');
           } else {
-            return LZString.decompressFromEncodedURIComponent(text);
+            if (navigator.clipboard) {
+              try {
+                await navigator.clipboard.writeText(encoded);
+                alert('Board is large. Encoded data copied to clipboard (Progressive WASM).');
+              } catch (err) {
+                prompt('Board is large. Please copy the encoded data (Progressive WASM) below:', encoded);
+              }
+            } else {
+              prompt('Board is large. Please copy the encoded data (Progressive WASM) below:', encoded);
+            }
           }
         },
-
-        arrayBufferToBase64(buffer) {
-          let binary = '';
-          const bytes = new Uint8Array(buffer);
-          const len = bytes.byteLength;
-          for (let i = 0; i < len; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
-          return btoa(binary);
-        },
-
-        base64ToArrayBuffer(base64) {
-          const binary = atob(base64);
-          const len = binary.length;
-          const bytes = new Uint8Array(len);
-          for (let i = 0; i < len; i++) {
-            bytes[i] = binary.charCodeAt(i);
-          }
-          return bytes.buffer;
-        }
       };
     }
   </script>
