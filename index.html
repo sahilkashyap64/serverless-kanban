@@ -4,59 +4,64 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AlpineJS Trello Clone with Brotli Compression (BrotliJS)</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
   <!-- AlpineJS -->
   <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
   <!-- Fallback compression library (LZString) -->
   <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js"></script>
   <!-- Base64 encoding library -->
   <script src="https://cdn.jsdelivr.net/npm/js-base64@3.7.2/base64.min.js"></script>
-  <!-- BrotliJS library from Dominik Homberger’s GitHub via jsDelivr mirror -->
+  <!-- BrotliJS library -->
   <script src="https://dominikhlbg.github.io/brotlijs/brotli.js"></script>
   <style>
-    body { font-family: sans-serif; padding: 20px; }
-    .board { display: flex; gap: 16px; }
-    .column { border: 1px solid #ccc; border-radius: 8px; padding: 10px; width: 200px; background: #f9f9f9; }
-    .card { background: white; border-radius: 6px; padding: 8px; margin-bottom: 8px; box-shadow: 1px 1px 4px rgba(0,0,0,0.1); cursor: pointer; }
-    .actions { margin-top: 20px; }
+    body { font-family: sans-serif; }
   </style>
 </head>
-<body>
-  <h1>🗂️ AlpineJS Trello Clone with Brotli Compression (BrotliJS)</h1>
-  <div class="board">
+<body class="bg-gray-100 p-4">
+  <h1 class="text-2xl font-bold text-center mb-6">🗂️ AlpineJS Trello Clone with Brotli Compression (BrotliJS)</h1>
+  <div class="board flex flex-wrap gap-4 justify-center">
     <template x-for="(column, colIndex) in board.columns" :key="colIndex">
-      <div class="column" @dragover.prevent @drop="drop($event, colIndex)">
-        <h3 x-text="column.name"></h3>
+      <div class="column bg-white shadow-md rounded-lg p-4 w-full sm:w-64" @dragover.prevent @drop="drop($event, colIndex)">
+        <h3 class="text-lg font-semibold mb-4" x-text="column.name"></h3>
         <template x-for="(card, cardIndex) in column.cards" :key="cardIndex">
-          <div class="card" 
-               draggable="true" 
+          <div class="card bg-gray-50 border border-gray-200 rounded-lg p-2 mb-2 shadow-sm cursor-pointer"
+               draggable="true"
                @dragstart="dragStart($event, colIndex, cardIndex)"
-               @dblclick="editCard(colIndex, cardIndex)"
-               x-text="card"></div>
+               @dblclick="editCard(colIndex, cardIndex)">
+            <div x-data="{ expanded: false }">
+              <p x-text="expanded ? card : (card.length > 100 ? card.substring(0, 100) + '...' : card)"></p>
+              <button class="text-blue-500 text-sm mt-1" @click="expanded = !expanded" x-show="card.length > 100">
+                <span x-text="expanded ? 'Read Less' : 'Read More'"></span>
+              </button>
+            </div>
+          </div>
         </template>
-        <input type="text" placeholder="New card..." x-model="newCards[colIndex]">
-        <button @click="addCard(colIndex)">Add</button>
+        <div class="mt-4">
+          <input type="text" placeholder="New card..." x-model="newCards[colIndex]" class="w-full border border-gray-300 rounded-lg p-2 mb-2">
+          <button @click="addCard(colIndex)" class="w-full bg-blue-500 text-white rounded-lg py-2">Add</button>
+        </div>
       </div>
     </template>
   </div>
 
-  <div class="actions">
-    <button @click="shareBoardBrotli">🔗 Share Board (BrotliJS)</button>
-    <button @click="downloadBoard">💾 Download Board</button>
-    <input type="file" @change="importBoard($event)">
+  <div class="actions mt-8 text-center">
+    <button @click="shareBoardBrotli" class="bg-green-500 text-white rounded-lg px-4 py-2 mr-2">🔗 Share Board (BrotliJS)</button>
+    <button @click="downloadBoard" class="bg-blue-500 text-white rounded-lg px-4 py-2 mr-2">💾 Download Board</button>
+    <label class="bg-gray-200 text-gray-700 rounded-lg px-4 py-2 cursor-pointer">
+      📂 Import Board
+      <input type="file" @change="importBoard($event)" class="hidden">
+    </label>
   </div>
 
   <script>
     // Compress the given text using BrotliJS.
     async function compressWithBrotli(text) {
       try {
-        // Convert the string into a Uint8Array.
         const encoder = new TextEncoder();
         const input = encoder.encode(text);
-        // Create a Brotli instance and compress the input array.
-        // Using quality level 6 (adjustable if desired).
         const bro = new Brotli();
         const compressed = bro.compressArray(input, 6);
-        // Wrap the resulting array of numbers as a Uint8Array for Base64 encoding.
         const compressedUint8 = new Uint8Array(compressed);
         const base64Encoded = Base64.fromUint8Array(compressedUint8, true);
         return `BR1|${base64Encoded}`;
@@ -73,13 +78,10 @@
           throw new Error("Invalid encoding version");
         }
         const base64Data = parts[1];
-        // Decode Base64 into a Uint8Array.
         const compressedUint8 = Base64.toUint8Array(base64Data);
-        // BrotliJS expects a plain array of numbers.
         const compressedArray = Array.from(compressedUint8);
         const bro = new Brotli();
         const decompressedArray = bro.decompressArray(compressedArray);
-        // Convert the decompressed array back into a string.
         const restoredStr = String.fromCharCode.apply(null, decompressedArray);
         return restoredStr;
       } catch (err) {
@@ -110,7 +112,6 @@
                   return;
                 }
               } else {
-                // Fallback to LZString compression (if present)
                 const decompressed = LZString.decompressFromEncodedURIComponent(urlHash);
                 if (decompressed) {
                   this.board = JSON.parse(decompressed);
@@ -185,7 +186,6 @@
           }
         },
 
-        // Compress and share the board using BrotliJS.
         async shareBoardBrotli() {
           const json = JSON.stringify(this.board);
           try {
