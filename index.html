@@ -3,16 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AlpineJS Trello Clone with Adaptive Progressive Compression</title>
+  <title>AlpineJS Trello Clone with Brotli Compression (BrotliJS)</title>
   <!-- AlpineJS -->
   <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
-  <!-- Fallback compression library -->
+  <!-- Fallback compression library (LZString) -->
   <script src="https://cdn.jsdelivr.net/npm/lz-string@1.4.4/libs/lz-string.min.js"></script>
-  <!-- Progressive JS compression libraries -->
-  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+  <!-- Base64 encoding library -->
   <script src="https://cdn.jsdelivr.net/npm/js-base64@3.7.2/base64.min.js"></script>
-  <!-- WASM Zstandard compression -->
-  <script src="https://cdn.jsdelivr.net/npm/zstd-codec@1.4.0/dist/zstd-codec.min.js"></script>
+  <!-- BrotliJS library from Dominik Homberger’s GitHub via jsDelivr mirror -->
+  <script src="https://dominikhlbg.github.io/brotlijs/brotli.js"></script>
   <style>
     body { font-family: sans-serif; padding: 20px; }
     .board { display: flex; gap: 16px; }
@@ -22,7 +21,7 @@
   </style>
 </head>
 <body>
-  <h1>🗂️ AlpineJS Trello Clone</h1>
+  <h1>🗂️ AlpineJS Trello Clone with Brotli Compression (BrotliJS)</h1>
   <div class="board">
     <template x-for="(column, colIndex) in board.columns" :key="colIndex">
       <div class="column" @dragover.prevent @drop="drop($event, colIndex)">
@@ -41,13 +40,53 @@
   </div>
 
   <div class="actions">
-    <button @click="shareBoardJS">🔗 Share Board (Progressive JS)</button>
-    <button @click="shareBoardWASM">🔗 Share Board (Progressive WASM)</button>
+    <button @click="shareBoardBrotli">🔗 Share Board (BrotliJS)</button>
     <button @click="downloadBoard">💾 Download Board</button>
     <input type="file" @change="importBoard($event)">
   </div>
 
   <script>
+    // Compress the given text using BrotliJS.
+    async function compressWithBrotli(text) {
+      try {
+        // Convert the string into a Uint8Array.
+        const encoder = new TextEncoder();
+        const input = encoder.encode(text);
+        // Create a Brotli instance and compress the input array.
+        // Using quality level 6 (adjustable if desired).
+        const bro = new Brotli();
+        const compressed = bro.compressArray(input, 6);
+        // Wrap the resulting array of numbers as a Uint8Array for Base64 encoding.
+        const compressedUint8 = new Uint8Array(compressed);
+        const base64Encoded = Base64.fromUint8Array(compressedUint8, true);
+        return `BR1|${base64Encoded}`;
+      } catch (err) {
+        throw err;
+      }
+    }
+
+    // Decompress the encoded string using BrotliJS.
+    async function decompressWithBrotli(encoded) {
+      try {
+        const parts = encoded.split('|');
+        if (parts[0] !== 'BR1') {
+          throw new Error("Invalid encoding version");
+        }
+        const base64Data = parts[1];
+        // Decode Base64 into a Uint8Array.
+        const compressedUint8 = Base64.toUint8Array(base64Data);
+        // BrotliJS expects a plain array of numbers.
+        const compressedArray = Array.from(compressedUint8);
+        const bro = new Brotli();
+        const decompressedArray = bro.decompressArray(compressedArray);
+        // Convert the decompressed array back into a string.
+        const restoredStr = String.fromCharCode.apply(null, decompressedArray);
+        return restoredStr;
+      } catch (err) {
+        throw err;
+      }
+    }
+
     function kanbanApp() {
       return {
         board: {
@@ -59,32 +98,19 @@
         },
         newCards: ['', '', ''],
         draggingCard: null,
-        // WASM Zstandard state
-        zstdInitialized: false,
-        zstd: null,
-        // Target maximum length for the encoded string (e.g. URL size limit)
-        targetLength: 2000,
-        // Maximum number of iterations to avoid infinite loops
-        maxIterations: 10,
 
         async loadBoard() {
           const urlHash = window.location.hash.slice(1);
           if (urlHash) {
             try {
-              if (urlHash.startsWith("ENCv1|")) {
-                const decompressed = await this.progressiveDecodeJS(urlHash);
-                if (decompressed) {
-                  this.board = JSON.parse(decompressed);
-                  return;
-                }
-              } else if (urlHash.startsWith("ENCv2|")) {
-                const decompressed = await this.progressiveDecodeWASM(urlHash);
+              if (urlHash.startsWith("BR1|")) {
+                const decompressed = await decompressWithBrotli(urlHash);
                 if (decompressed) {
                   this.board = JSON.parse(decompressed);
                   return;
                 }
               } else {
-                // Fallback to LZString compression
+                // Fallback to LZString compression (if present)
                 const decompressed = LZString.decompressFromEncodedURIComponent(urlHash);
                 if (decompressed) {
                   this.board = JSON.parse(decompressed);
@@ -159,113 +185,29 @@
           }
         },
 
-        // Progressive encoding using pako and js-base64 (JavaScript version)
-        async progressiveEncodeJS(text) {
-          let compressed = text;
-          let iterations = 0;
-          // Continue iterating until the compressed string is below targetLength or max iterations reached
-          while (compressed.length > this.targetLength && iterations < this.maxIterations) {
-            iterations++;
-            const compressedData = pako.gzip(compressed);
-            const newCompressed = Base64.fromUint8Array(compressedData, true);
-            // If further compression doesn't reduce size, break
-            if (newCompressed.length >= compressed.length) break;
-            compressed = newCompressed;
-          }
-          return `ENCv1|${iterations}|${compressed}`;
-        },
-
-        async progressiveDecodeJS(encoded) {
-          const parts = encoded.split('|');
-          if (parts.length < 3) throw new Error('Invalid format for progressive JS encoding');
-          const iterations = parseInt(parts[1], 10);
-          let compressed = parts.slice(2).join('|');
-          for (let i = 0; i < iterations; i++) {
-            const compressedData = Base64.toUint8Array(compressed);
-            compressed = pako.ungzip(compressedData, { to: 'string' });
-          }
-          return compressed;
-        },
-
-        // Progressive encoding using WASM (Zstandard via zstd-codec)
-        async initZstd() {
-          if (!this.zstdInitialized) {
-            this.zstd = await new Promise(resolve => {
-              ZstdCodec.run(zstd => resolve(zstd));
-            });
-            this.zstdInitialized = true;
-          }
-        },
-
-        async progressiveEncodeWASM(text) {
-          await this.initZstd();
-          let compressed = text;
-          let iterations = 0;
-          while (compressed.length > this.targetLength && iterations < this.maxIterations) {
-            iterations++;
-            const cctx = new this.zstd.SimpleCompressionContext();
-            const compressedData = cctx.compress(new TextEncoder().encode(compressed));
-            const newCompressed = Base64.fromUint8Array(compressedData, true);
-            if (newCompressed.length >= compressed.length) break;
-            compressed = newCompressed;
-          }
-          return `ENCv2|${iterations}|${compressed}`;
-        },
-
-        async progressiveDecodeWASM(encoded) {
-          await this.initZstd();
-          const parts = encoded.split('|');
-          if (parts.length < 3) throw new Error('Invalid format for progressive WASM encoding');
-          const iterations = parseInt(parts[1], 10);
-          let compressed = parts.slice(2).join('|');
-          for (let i = 0; i < iterations; i++) {
-            const compressedData = Base64.toUint8Array(compressed);
-            const dctx = new this.zstd.SimpleDecompressionContext();
-            const decompressed = dctx.decompress(compressedData);
-            compressed = new TextDecoder().decode(decompressed);
-          }
-          return compressed;
-        },
-
-        // Share Board using Progressive JS method
-        async shareBoardJS() {
+        // Compress and share the board using BrotliJS.
+        async shareBoardBrotli() {
           const json = JSON.stringify(this.board);
-          const encoded = await this.progressiveEncodeJS(json);
-          if (encoded.length < 8000) {
-            window.location.hash = encoded;
-            alert('URL updated using Progressive JS. Share this URL.');
-          } else {
-            if (navigator.clipboard) {
-              try {
-                await navigator.clipboard.writeText(encoded);
-                alert('Board is large. Encoded data copied to clipboard (Progressive JS).');
-              } catch (err) {
-                prompt('Board is large. Please copy the encoded data (Progressive JS) below:', encoded);
-              }
+          try {
+            const encoded = await compressWithBrotli(json);
+            if (encoded.length < 8000) {
+              window.location.hash = encoded;
+              alert('URL updated using Brotli (BrotliJS). Share this URL.');
             } else {
-              prompt('Board is large. Please copy the encoded data (Progressive JS) below:', encoded);
-            }
-          }
-        },
-
-        // Share Board using Progressive WASM method
-        async shareBoardWASM() {
-          const json = JSON.stringify(this.board);
-          const encoded = await this.progressiveEncodeWASM(json);
-          if (encoded.length < 8000) {
-            window.location.hash = encoded;
-            alert('URL updated using Progressive WASM. Share this URL.');
-          } else {
-            if (navigator.clipboard) {
-              try {
-                await navigator.clipboard.writeText(encoded);
-                alert('Board is large. Encoded data copied to clipboard (Progressive WASM).');
-              } catch (err) {
-                prompt('Board is large. Please copy the encoded data (Progressive WASM) below:', encoded);
+              if (navigator.clipboard) {
+                try {
+                  await navigator.clipboard.writeText(encoded);
+                  alert('Board is large. Encoded data copied to clipboard (Brotli via BrotliJS).');
+                } catch (err) {
+                  prompt('Board is large. Please copy the encoded data (Brotli via BrotliJS) below:', encoded);
+                }
+              } else {
+                prompt('Board is large. Please copy the encoded data (Brotli via BrotliJS) below:', encoded);
               }
-            } else {
-              prompt('Board is large. Please copy the encoded data (Progressive WASM) below:', encoded);
             }
+          } catch (err) {
+            console.error("Error during Brotli compression:", err);
+            alert("Brotli compression failed.");
           }
         },
       };
